@@ -55,7 +55,7 @@ The current `NonIdealReactorApp` branch and its non-ideal-reactor extensions are
 
 - [GitHub repository](https://github.com/JavierBerenguer/Trabajo-Final-de-Grado.git)
 - MathWorks project page  [![View Trabajo-Final-de-Grado on File Exchange](https://www.mathworks.com/matlabcentral/images/matlab-file-exchange.svg)](https://es.mathworks.com/matlabcentral/fileexchange/184241-trabajo-final-de-grado)
-- University of Alicante TFG repository entry: `[pending link]`
+- [University of Alicante TFG repository entry](https://hdl.handle.net/10045/169730)
 
 ## Documentation
 
