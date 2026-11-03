@@ -11,6 +11,7 @@ classdef RTD
 % =========================================================================
 % Javier Berenguer Sabater
 % Created: March 21, 2026. Last update: July 7, 2026
+% Corrected: October 6, 2026 (E-004: bypass-model variance and delta mass)
 % Precision update: increased resolution for numerical accuracy
 % =========================================================================
 
@@ -645,12 +646,18 @@ classdef RTD
             tau_s = tau_total / (1 - beta) ;
 
             if nargin < 3
-                tspan = linspace(0, 15 * tau_s, 3000) ;
+                % Step <= tau_total/400 so the delta keeps width tau_total/200 (E-004)
+                tspan = linspace(0, 15 * tau_s, max(3000, ceil(15 * tau_s / (tau_total / 400)) + 1)) ;
             end
 
-            % Gaussian approximation for delta(t)
-            sigma_delta = tau_total / 200 ;
-            delta_approx = (1 / (sigma_delta * sqrt(2*pi))) * ...
+            % One-sided Gaussian approximation for delta(t) on t >= 0
+            % (E-004, Oct 6, 2026: the former two-sided Gaussian kept only
+            % half of its mass on t >= 0, so after normalization the
+            % effective bypass fraction was beta/(2-beta) instead of beta)
+            % Width resolved by the time grid (at least two steps) so the
+            % delta keeps its mass on coarse or long grids (E-004)
+            sigma_delta = max(tau_total / 200, 2 * RTD.gridStep(tspan)) ;
+            delta_approx = (2 / (sigma_delta * sqrt(2*pi))) * ...
                            exp(-0.5 * (tspan / sigma_delta).^2) ;
 
             % E(t) = beta*delta(t) + (1-beta)*(1/tau_s)*exp(-t/tau_s)
@@ -662,9 +669,11 @@ classdef RTD
 
             % Analytical moments
             % tau = (1-beta)*tau_s = tau_total
-            % sigma2 is complex due to the delta function contribution
+            % E[t^2] = 2*(1-beta)*tau_s^2, so
+            % sigma2 = E[t^2] - tau^2 = (1-beta)*(1+beta)*tau_s^2
+            % (E-004, Oct 6, 2026: was (1-beta)*tau_s^2)
             obj.tau    = tau_total ;
-            obj.sigma2 = (1 - beta) * tau_s^2 ;  % from second moment
+            obj.sigma2 = (1 - beta) * (1 + beta) * tau_s^2 ;
         end
 
         function obj = cstr_with_bypass_and_dead(tau_total, alpha, beta, tspan)
@@ -687,11 +696,12 @@ classdef RTD
             tau_s = alpha * tau_total / (1 - beta) ;
 
             if nargin < 4
-                tspan = linspace(0, 15 * tau_s, 3000) ;
+                tspan = linspace(0, 15 * tau_s, max(3000, ceil(15 * tau_s / (tau_total / 400)) + 1)) ;  % E-004
             end
 
-            sigma_delta = tau_total / 200 ;
-            delta_approx = (1 / (sigma_delta * sqrt(2*pi))) * ...
+            % One-sided Gaussian approximation for delta(t) (E-004)
+            sigma_delta = max(tau_total / 200, 2 * RTD.gridStep(tspan)) ;  % E-004
+            delta_approx = (2 / (sigma_delta * sqrt(2*pi))) * ...
                            exp(-0.5 * (tspan / sigma_delta).^2) ;
 
             Et = beta * delta_approx + ...
@@ -701,7 +711,7 @@ classdef RTD
             obj.source = 'cstr_bypass_dead' ;
 
             obj.tau    = beta * 0 + (1-beta) * tau_s ;  % = alpha*tau_total
-            obj.sigma2 = (1-beta) * tau_s^2 ;
+            obj.sigma2 = (1-beta) * (1+beta) * tau_s^2 ;  % E-004: was (1-beta)*tau_s^2
         end
 
         function obj = laminar_flow(tau_val, tspan)
@@ -751,6 +761,18 @@ classdef RTD
             end
 
             out = reshape(x, 1, []) ;
+        end
+
+        function step = gridStep(t)
+            % Typical spacing of a time grid (median of its increments).
+            % Added Oct 6, 2026 (E-004) to size the delta approximation.
+            increments = diff(t(:)) ;
+            increments = increments(increments > 0) ;
+            if isempty(increments)
+                step = 0 ;
+            else
+                step = median(increments) ;
+            end
         end
 
     end
