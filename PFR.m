@@ -6,7 +6,9 @@ classdef PFR < Reactor
     % =========================================================================
     % Isabela Fons Moreno-Palancas
     % Last update: April 1, 2020
-    % Corrected: October 1, 2026 (T-101)
+    % Corrected: November 2026 (volume without length, utility profile,
+    % heat duty along the reactor, gas volumetric flow, liquid pressure
+    % drop, flow and heat per tube, solver tolerances)
     % =========================================================================
     
     properties
@@ -18,7 +20,7 @@ classdef PFR < Reactor
     end
     
     properties (Hidden = true) % This property is not displayed on the property list
-        heatArray = [] ; % Stores the value of dQdL along the reactor >> Useful to compute OPEX
+        heatArray = [] ; % Total dQ/dL for all tubes along the reactor (W/m) >> Useful to compute OPEX
     end
     
     methods
@@ -138,7 +140,9 @@ classdef PFR < Reactor
                 
                 %Rate of reaction
                 if strcmp(Feed.phase, 'L')
-                    Qv = Feed.volumetricFlow ;
+                    % Volumetric flow per tube, without the bypass (as the moles)
+                    Qv = Feed.volumetricFlow / ...
+                        ((1+R.bypassRatio)*R.nTubes) ;
                 elseif strcmp(Feed.phase, 'G')
                     Qv = sum(moles) * Rg * T/P ; %m^3/s
                 end
@@ -155,8 +159,9 @@ classdef PFR < Reactor
                 componentCp = RS.compute_HeatCapacity(T,P) ;
                 DH = RS.DHref + (componentCp*RS.stochiometricMatrix')*(T-RS.Tref) ; %J/mol [1xnReactions]
                 
+                % dQdL is the total heat per unit length for all tubes
                 if strcmp(R.heatMode,'Isothermal') == 1
-                    dQdL = crossSectionalArea*(r_i*DH') ;
+                    dQdL = R.nTubes*crossSectionalArea*(r_i*DH') ;
                 else
                     % Heat exchange < Energy Balance
                     if strcmp(R.heatMode,'Adiabatic') == 1
@@ -167,7 +172,8 @@ classdef PFR < Reactor
                     end
                 end
                 
-                dTdL = (dQdL - crossSectionalArea*(r_i*DH'))/(componentCp*moles) ;
+                dTdL = (dQdL/R.nTubes - crossSectionalArea*(r_i*DH')) / ...
+                    (componentCp*moles) ;
                 
                 % Momentum balance
                 if strcmp(R.pressureMode,'Constant') == 1
@@ -221,7 +227,8 @@ classdef PFR < Reactor
                 crossSectionalArea = (R.V/R.L)/R.nTubes ; % m^2
 
                 if strcmp(Feed.phase,'L')
-                    Qv = Feed.volumetricFlow ;
+                    Qv = Feed.volumetricFlow / ...
+                        ((1+R.bypassRatio)*R.nTubes) ;
                 else
                     Qv = sum(moles)*8.314*T/P ; % m^3/s
                 end
@@ -233,7 +240,7 @@ classdef PFR < Reactor
                     (T-RS.Tref) ; % J/mol
 
                 if strcmp(R.heatMode,'Isothermal')
-                    dQdL = crossSectionalArea*(r_i*DH') ;
+                    dQdL = R.nTubes*crossSectionalArea*(r_i*DH') ;
                 elseif strcmp(R.heatMode,'Adiabatic')
                     dQdL = 0 ;
                 else

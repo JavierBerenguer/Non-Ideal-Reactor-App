@@ -6,7 +6,7 @@ classdef ReactionSys
 % =========================================================================
 % Isabela Fons Moreno-Palancas
 % Last update: July 7, 2026
-% Corrected: October 1, 2026 (T-101)
+% Corrected: November 2026 (index of Cp = f(T,P))
 % =========================================================================
     properties
         componentNames

@@ -6,7 +6,8 @@ classdef CSTR < Reactor
     % =========================================================================
     % Isabela Fons Moreno-Palancas
     % Created: March 14, 2020. Last update: April 20, 2020
-    % Corrected: October 1, 2026 (T-101)
+    % Corrected: November 2026 (energy balance sign, heat exchange mode,
+    % gas volumetric flow, solver tolerances and residual scaling)
     % =========================================================================
     properties (Hidden = true) % This property is not displayed on the property list
         heatFlux % Stores the value of Q >> Useful to compute OPEX
@@ -25,17 +26,39 @@ classdef CSTR < Reactor
             
             %%
             Guess = [Feed.molarFlow , Feed.T, Feed.P] ;
+            % Dimensionless residuals so that the material, energy,
+            % temperature and pressure equations have comparable weight
+            % in fsolve. The physical balances are unchanged.
+            convergenceTolerance = 1e-9 ;
+            moles_inlet = Feed.molarFlow/(1+R.bypassRatio) ; % mol/s
+            flowScale = max(max(abs(moles_inlet)),1e-8) ; % mol/s
+            materialScale = max(abs(moles_inlet),flowScale) ; % mol/s
+            inletCp = RS.compute_HeatCapacity(Feed.T,Feed.P) ; % J/(mol*K)
+            energyScale = max(sum(abs(moles_inlet).*abs(inletCp))* ...
+                max(abs(Feed.T),1),1) ; % W
+            temperatureScale = max(abs(Feed.T),1) ; % K
+            pressureScale = max(abs(Feed.P),1) ; % Pa
+
             typicalX = abs(Guess) ;
-            flowScale = max(max(abs(Feed.molarFlow)),1e-8) ;
             typicalX(typicalX == 0) = flowScale ;
             options = optimoptions('fsolve','Display','none', ...
                 'FunctionTolerance',1e-12,'StepTolerance',1e-12,'OptimalityTolerance',1e-12, ...
-                'TypicalX',typicalX(:)) ; % column: fsolve scales internally by columns (Claude fix, T-101 review)
-            [y,residual,exitflag] = fsolve(@fsolveCSTR,Guess,options) ;
-            if exitflag <= 0
+                'TypicalX',typicalX(:)) ; % column: fsolve scales internally by columns
+            [y,~,exitflag] = fsolve(@fsolveCSTR,Guess,options) ;
+
+            % Exact specifications should not retain roundoff introduced by
+            % the scaling. Recheck all balances at the snapped state.
+            if strcmp(R.heatMode,'Isothermal')
+                y(RS.nComponents+1) = Feed.T ;
+            end
+            y(RS.nComponents+2) = Feed.P ;
+            residual = fsolveCSTR(y) ;
+            maximumScaledResidual = norm(residual,inf) ;
+            if ~isfinite(maximumScaledResidual) || ...
+                    maximumScaledResidual > convergenceTolerance
                 warning('CSTR:notConverged', ...
-                    'fsolve did not converge (exitflag %d, maximum residual %.3e).', ...
-                    exitflag,norm(residual,inf)) ;
+                    ['fsolve did not converge (exitflag %d, maximum scaled ' ...
+                    'residual %.3e).'],exitflag,maximumScaledResidual) ;
             end
 
             if strcmp(R.heatMode,'Adiabatic')
@@ -88,12 +111,12 @@ classdef CSTR < Reactor
                 r_j = r_i*RS.stochiometricMatrix ; %[1 x nComponents]
                                
                 % Mass balance
-                moles_inlet = Feed.molarFlow/(1+R.bypassRatio) ;
-                y(1:RS.nComponents) = moles_inlet - moles + r_j*R.V ;
-                
+                materialResidual = moles_inlet - moles + r_j*R.V ;
+                y(1:RS.nComponents) = materialResidual./materialScale ;
+
                 %Energy balance
                 if strcmp(R.heatMode,'Isothermal') == 1
-                    y(RS.nComponents+1) = T - Feed.T ;
+                    y(RS.nComponents+1) = (T-Feed.T)/temperatureScale ;
                 else
                     if strcmp(R.heatMode,'Adiabatic') == 1
                         Q = 0;
@@ -103,12 +126,13 @@ classdef CSTR < Reactor
 
                     % Table 1 of the ReactorApp article: sensible heat plus
                     % V*sum(r_i*DH_i), minus heat entering the reactor.
-                    y(RS.nComponents+1) = moles_inlet*componentCp' * ...
+                    energyResidual = moles_inlet*componentCp' * ...
                         (T-Feed.T) + R.V*(r_i*DH') - Q ;
+                    y(RS.nComponents+1) = energyResidual/energyScale ;
                 end
-                
+
                 % Momentum balance
-                y(RS.nComponents+2) = P - Feed.P ;
+                y(RS.nComponents+2) = (P-Feed.P)/pressureScale ;
                 
                 y = y';
                 

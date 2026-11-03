@@ -9,7 +9,7 @@ classdef Batch < Reactor
     % =========================================================================
     % Isabela Fons Moreno-Palancas
     % Created: March 14, 2020. Last update: April 1, 2020
-    % Corrected: October 1, 2026 (T-101)
+    % Corrected: November 2026 (heat exchange mode with utility outlet temperature)
     % =========================================================================
     
     properties
