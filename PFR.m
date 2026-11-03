@@ -6,6 +6,9 @@ classdef PFR < Reactor
     % =========================================================================
     % Isabela Fons Moreno-Palancas
     % Last update: April 1, 2020
+    % Corrected: November 2026 (volume without length, utility profile,
+    % heat duty along the reactor, gas volumetric flow, liquid pressure
+    % drop, flow and heat per tube, solver tolerances)
     % =========================================================================
     
     properties
@@ -17,7 +20,7 @@ classdef PFR < Reactor
     end
     
     properties (Hidden = true) % This property is not displayed on the property list
-        heatArray = [] ; % Stores the value of dQdL along the reactor >> Useful to compute OPEX
+        heatArray = [] ; % Total dQ/dL for all tubes along the reactor (W/m) >> Useful to compute OPEX
     end
     
     methods
@@ -51,9 +54,11 @@ classdef PFR < Reactor
             % Isabela Fons Moreno-Palancas
             % Last update: April 16, 2020
             % =========================================================================%
-            %% If pipe length and diameter are specified, volume is recalculated >> useful for optimization
-            if isempty(R.L) == 0 && isempty(R.diameterTubes) == 0
+            %% Length takes precedence; otherwise derive it from reactor volume.
+            if ~isempty(R.L)
                 R.V = R.nTubes*pi*(R.diameterTubes/2)^2*R.L ;
+            else
+                R.L = R.V/(R.nTubes*pi*(R.diameterTubes/2)^2) ;
             end
             
             % Operations to compute the initial conditions
@@ -61,7 +66,17 @@ classdef PFR < Reactor
             moles_inlet_tube = moles_inlet/R.nTubes ;
             
             InitialConditions = [moles_inlet_tube Feed.T Feed.P R.inletUtilityTemperature] ;
-            [L,y]=ode45(@odePFR,[0 R.L],InitialConditions) ;
+            absoluteTolerance = max(1e-10*abs(InitialConditions),1e-12) ;
+            options = odeset('RelTol',1e-8,'AbsTol',absoluteTolerance) ;
+            [L,y] = ode45(@odePFR,[0 R.L],InitialConditions,options) ;
+
+            % computeCost integrates heatArray on a uniform 0..L mesh.
+            heatMesh = linspace(0,R.L,201)' ;
+            heatStates = interp1(L,y,heatMesh,'pchip') ;
+            R.heatArray = zeros(size(heatMesh)) ;
+            for iHeat = 1:numel(heatMesh)
+                R.heatArray(iHeat) = heatPerLength(heatStates(iHeat,:)) ;
+            end
             
             % Mass balance in the mixer
             moles_beforeMix = y(end,1:RS.nComponents)*R.nTubes ;
@@ -82,7 +97,10 @@ classdef PFR < Reactor
             Product.P = P_out ;
             Product.phase = Feed.phase ;
             Product.viscosity = Feed.viscosity ;
-            Product.volumetricFlow = Feed.volumetricFlow_Units ;
+            Product.volumetricFlow_Units = Feed.volumetricFlow_Units ;
+            Product.concentration_Units = Feed.concentration_Units ;
+            Product.volumetricFlow = [] ;
+            Product.concentration = [] ;
             if strcmp(Product.phase,'L')
                 Product.volumetricFlow = Feed.volumetricFlow ;
                 Product.density = Feed.density ;
@@ -111,7 +129,7 @@ classdef PFR < Reactor
             end
             %% Compute the derivatives of the ODE system
             
-            function dydL = odePFR(L,y)
+            function dydL = odePFR(~,y)
                 
                 moles = y(1:RS.nComponents);
                 T = y(RS.nComponents+1);
@@ -122,7 +140,9 @@ classdef PFR < Reactor
                 
                 %Rate of reaction
                 if strcmp(Feed.phase, 'L')
-                    Qv = Feed.volumetricFlow ;
+                    % Volumetric flow per tube, without the bypass (as the moles)
+                    Qv = Feed.volumetricFlow / ...
+                        ((1+R.bypassRatio)*R.nTubes) ;
                 elseif strcmp(Feed.phase, 'G')
                     Qv = sum(moles) * Rg * T/P ; %m^3/s
                 end
@@ -139,8 +159,9 @@ classdef PFR < Reactor
                 componentCp = RS.compute_HeatCapacity(T,P) ;
                 DH = RS.DHref + (componentCp*RS.stochiometricMatrix')*(T-RS.Tref) ; %J/mol [1xnReactions]
                 
+                % dQdL is the total heat per unit length for all tubes
                 if strcmp(R.heatMode,'Isothermal') == 1
-                    dQdL = crossSectionalArea*(r_i*DH') ;
+                    dQdL = R.nTubes*crossSectionalArea*(r_i*DH') ;
                 else
                     % Heat exchange < Energy Balance
                     if strcmp(R.heatMode,'Adiabatic') == 1
@@ -151,16 +172,15 @@ classdef PFR < Reactor
                     end
                 end
                 
-                dTdL = (dQdL - crossSectionalArea*(r_i*DH'))/(componentCp*moles) ;
-                
-                R.heatArray = [R.heatArray; dQdL] ;
+                dTdL = (dQdL/R.nTubes - crossSectionalArea*(r_i*DH')) / ...
+                    (componentCp*moles) ;
                 
                 % Momentum balance
                 if strcmp(R.pressureMode,'Constant') == 1
                     dPdL = 0 ;
                 else
                     if strcmp(Feed.phase,'L')
-                        density = F.density ;
+                        density = Feed.density ;
                     elseif strcmp(Feed.phase,'G')
                         density = (RS.componentMw*moles/Qv)/1000 ; %kg/m^3
                     end
@@ -187,7 +207,8 @@ classdef PFR < Reactor
                 if isempty(R.outletUtilityTemperature)
                     dutilityTdL = 0 ;
                 else
-                    dutilityTdL = (R.outletUtilityTemperature - R.inletUtilityTemperature)/L ;
+                    dutilityTdL = ...
+                        (R.outletUtilityTemperature-R.inletUtilityTemperature)/R.L ;
                 end
                 
                 dydL(1:RS.nComponents) = dndL' ;
@@ -196,6 +217,35 @@ classdef PFR < Reactor
                 dydL((RS.nComponents)+3) = dutilityTdL ;
                 dydL = dydL' ;
                 
+            end
+
+            function dQdL = heatPerLength(state)
+                moles = state(1:RS.nComponents) ;
+                T = state(RS.nComponents+1) ;
+                P = state(RS.nComponents+2) ;
+                utilityT = state(RS.nComponents+3) ;
+                crossSectionalArea = (R.V/R.L)/R.nTubes ; % m^2
+
+                if strcmp(Feed.phase,'L')
+                    Qv = Feed.volumetricFlow / ...
+                        ((1+R.bypassRatio)*R.nTubes) ;
+                else
+                    Qv = sum(moles)*8.314*T/P ; % m^3/s
+                end
+                RS = RS.computeRate(moles/Qv,T) ;
+                constant_WtoV = (1-R.porosityCatalyst)*R.densityCatalyst ;
+                r_i = constant_WtoV*RS.r_i ;
+                componentCp = RS.compute_HeatCapacity(T,P) ;
+                DH = RS.DHref + (componentCp*RS.stochiometricMatrix') * ...
+                    (T-RS.Tref) ; % J/mol
+
+                if strcmp(R.heatMode,'Isothermal')
+                    dQdL = R.nTubes*crossSectionalArea*(r_i*DH') ;
+                elseif strcmp(R.heatMode,'Adiabatic')
+                    dQdL = 0 ;
+                else
+                    dQdL = R.nTubes*R.U*pi*R.diameterTubes*(utilityT-T) ;
+                end
             end
         end
     end
