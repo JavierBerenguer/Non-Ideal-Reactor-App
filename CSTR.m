@@ -6,6 +6,7 @@ classdef CSTR < Reactor
     % =========================================================================
     % Isabela Fons Moreno-Palancas
     % Created: March 14, 2020. Last update: April 20, 2020
+    % Corrected: October 1, 2026 (T-101)
     % =========================================================================
     properties (Hidden = true) % This property is not displayed on the property list
         heatFlux % Stores the value of Q >> Useful to compute OPEX
@@ -24,8 +25,29 @@ classdef CSTR < Reactor
             
             %%
             Guess = [Feed.molarFlow , Feed.T, Feed.P] ;
-            options = optimoptions('fsolve','Display','none');
-            y = fsolve(@fsolveCSTR,Guess,options) ;
+            typicalX = abs(Guess) ;
+            flowScale = max(max(abs(Feed.molarFlow)),1e-8) ;
+            typicalX(typicalX == 0) = flowScale ;
+            options = optimoptions('fsolve','Display','none', ...
+                'FunctionTolerance',1e-12,'StepTolerance',1e-12,'OptimalityTolerance',1e-12, ...
+                'TypicalX',typicalX(:)) ; % column: fsolve scales internally by columns (Claude fix, T-101 review)
+            [y,residual,exitflag] = fsolve(@fsolveCSTR,Guess,options) ;
+            if exitflag <= 0
+                warning('CSTR:notConverged', ...
+                    'fsolve did not converge (exitflag %d, maximum residual %.3e).', ...
+                    exitflag,norm(residual,inf)) ;
+            end
+
+            if strcmp(R.heatMode,'Adiabatic')
+                R.heatFlux = 0 ;
+            elseif strcmp(R.heatMode,'Other')
+                R.heatFlux = computeHeatFlux(y(RS.nComponents+1)) ;
+            else
+                [r_i,DH,componentCp] = reactionProperties(y) ;
+                moles_inlet = Feed.molarFlow/(1+R.bypassRatio) ;
+                R.heatFlux = moles_inlet*componentCp' * ...
+                    (y(RS.nComponents+1)-Feed.T) + R.V*(r_i*DH') ;
+            end
             
             % Mass balance in the mixer
             moles_beforeMix = y(1:RS.nComponents) ;
@@ -47,7 +69,10 @@ classdef CSTR < Reactor
             Product.P = P_out ;
             Product.phase = Feed.phase ;
             Product.viscosity = Feed.viscosity ;
-            Product.volumetricFlow = Feed.volumetricFlow_Units ;
+            Product.volumetricFlow_Units = Feed.volumetricFlow_Units ;
+            Product.concentration_Units = Feed.concentration_Units ;
+            Product.volumetricFlow = [] ;
+            Product.concentration = [] ;
             if strcmp(Product.phase,'L')
                 Product.volumetricFlow = Feed.volumetricFlow ; 
                 Product.density = Feed.density ;
@@ -59,18 +84,7 @@ classdef CSTR < Reactor
                 T = x(RS.nComponents+1) ;
                 P = x(RS.nComponents+2) ;
                 
-                Rg = 8.31; %J/mol/K
-                
-                %Rate of reaction
-                if Feed.phase == 'L'
-                    Qv = Feed.volumetricFlow ;
-                elseif Feed.phase =='G'
-                    Qv = sum(moles) * Rg * T/P ; %m^3/s
-                end
-                concentration = moles./Qv ;
-                RS = RS.computeRate(concentration,T) ;
-                constant_WtoV = (1-R.porosityCatalyst)*R.densityCatalyst ; % constant_WtoV is a conversion factor to change from mol/(time·kg cat) to mol/(time·m^3 reactor)
-                r_i = constant_WtoV * RS.r_i ; %[1 x nReactions]
+                [r_i,DH,componentCp] = reactionProperties(x) ;
                 r_j = r_i*RS.stochiometricMatrix ; %[1 x nComponents]
                                
                 % Mass balance
@@ -78,26 +92,19 @@ classdef CSTR < Reactor
                 y(1:RS.nComponents) = moles_inlet - moles + r_j*R.V ;
                 
                 %Energy balance
-                componentCp = RS.compute_HeatCapacity(T,P) ;
-                DH = RS.DHref + componentCp * RS.stochiometricMatrix' * (T-RS.Tref) ; %[1xnReactions]
-                
                 if strcmp(R.heatMode,'Isothermal') == 1
                     y(RS.nComponents+1) = T - Feed.T ;
-                    R.heatFlux = Feed.molarFlow*componentCp'*(T-Feed.T) - R.V*r_i*DH' ; 
                 else
                     if strcmp(R.heatMode,'Adiabatic') == 1
                         Q = 0;
                     elseif strcmp(R.heatMode,'Other') == 1
-                        if isempty(R.outletUtilityTemperature)
-                            meanUtilityTemperature = (R.inletUtilityTemperature - R.outletUtilityTemperature)/log(R.inletUtilityTemperature/R.outletUtilityTemperature) ;
-                        else
-                            meanUtilityTemperature = R.inletUtilityTemperature ;
-                        end
-                        Q = R.U * R.heatTransferArea * (meanUtilityTemperature - T) ;
-                        R.heatFlux = Q ;
+                        Q = computeHeatFlux(T) ;
                     end
-                    
-                    y(RS.nComponents+1) = Feed.molarFlow*componentCp'*(T-Feed.T) - R.V*r_i*DH' - Q ;
+
+                    % Table 1 of the ReactorApp article: sensible heat plus
+                    % V*sum(r_i*DH_i), minus heat entering the reactor.
+                    y(RS.nComponents+1) = moles_inlet*componentCp' * ...
+                        (T-Feed.T) + R.V*(r_i*DH') - Q ;
                 end
                 
                 % Momentum balance
@@ -105,6 +112,43 @@ classdef CSTR < Reactor
                 
                 y = y';
                 
+            end
+
+            function [r_i,DH,componentCp] = reactionProperties(x)
+                moles = x(1:RS.nComponents) ;
+                T = x(RS.nComponents+1) ;
+                P = x(RS.nComponents+2) ;
+
+                if Feed.phase == 'L'
+                    Qv = Feed.volumetricFlow ;
+                elseif Feed.phase == 'G'
+                    Qv = sum(moles)*8.314*T/P ; % m^3/s
+                end
+                concentration = moles./Qv ; % mol/m^3
+                RS = RS.computeRate(concentration,T) ;
+                constant_WtoV = (1-R.porosityCatalyst)*R.densityCatalyst ;
+                r_i = constant_WtoV*RS.r_i ; % mol/(m^3*s)
+                componentCp = RS.compute_HeatCapacity(T,P) ; % J/(mol*K)
+                DH = RS.DHref + componentCp*RS.stochiometricMatrix' * ...
+                    (T-RS.Tref) ; % J/mol
+            end
+
+            function Q = computeHeatFlux(T)
+                if isempty(R.outletUtilityTemperature)
+                    meanTemperatureDifference = R.inletUtilityTemperature-T ;
+                else
+                    deltaTIn = R.inletUtilityTemperature-T ;
+                    deltaTOut = R.outletUtilityTemperature-T ;
+                    % At a temperature cross (or equal end differences),
+                    % use the arithmetic mean because the LMTD is singular.
+                    if deltaTIn*deltaTOut <= 0 || deltaTIn == deltaTOut
+                        meanTemperatureDifference = (deltaTIn+deltaTOut)/2 ;
+                    else
+                        meanTemperatureDifference = ...
+                            (deltaTIn-deltaTOut)/log(deltaTIn/deltaTOut) ;
+                    end
+                end
+                Q = R.U*R.heatTransferArea*meanTemperatureDifference ; % W
             end
         end
         

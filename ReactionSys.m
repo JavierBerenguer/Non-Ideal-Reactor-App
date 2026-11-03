@@ -6,6 +6,7 @@ classdef ReactionSys
 % =========================================================================
 % Isabela Fons Moreno-Palancas
 % Last update: July 7, 2026
+% Corrected: October 1, 2026 (T-101)
 % =========================================================================
     properties
         componentNames
@@ -139,7 +140,7 @@ classdef ReactionSys
                     equation = RS.componentCp.Function{i} ;
                     componentCp(i) = equation(T) ;
                 elseif strcmp(RS.componentCp.option,'Cp = f(T,P)')
-                    equation = RS.componentCp(i).FunctionWithP{i} ;
+                    equation = RS.componentCp.FunctionWithP{i} ;
                     componentCp(i) = equation(T,P) ;
                 elseif strcmp(RS.componentCp.option,'User defined')
                     componentCp(i) = RS.componentCp.UserValues(i) ;

@@ -9,6 +9,7 @@ classdef Batch < Reactor
     % =========================================================================
     % Isabela Fons Moreno-Palancas
     % Created: March 14, 2020. Last update: April 1, 2020
+    % Corrected: October 1, 2026 (T-101)
     % =========================================================================
     
     properties
@@ -113,11 +114,20 @@ classdef Batch < Reactor
                     Q = 0 ;
                 elseif strcmp(R.heatMode,'Other') == 1
                     if isempty(R.outletUtilityTemperature)
-                        meanUtilityTemperature = (R.inletUtilityTemperature - R.outletUtilityTemperature)/log(R.inletUtilityTemperature/R.outletUtilityTemperature) ;
+                        meanTemperatureDifference = R.inletUtilityTemperature-T ;
                     else
-                        meanUtilityTemperature = R.inletUtilityTemperature ;
+                        deltaTIn = R.inletUtilityTemperature-T ;
+                        deltaTOut = R.outletUtilityTemperature-T ;
+                        % At a temperature cross (or equal end differences),
+                        % use the arithmetic mean because the LMTD is singular.
+                        if deltaTIn*deltaTOut <= 0 || deltaTIn == deltaTOut
+                            meanTemperatureDifference = (deltaTIn+deltaTOut)/2 ;
+                        else
+                            meanTemperatureDifference = ...
+                                (deltaTIn-deltaTOut)/log(deltaTIn/deltaTOut) ;
+                        end
                     end
-                    Q = R.U * R.heatTransferArea * (meanUtilityTemperature - T) ;
+                    Q = R.U*R.heatTransferArea*meanTemperatureDifference ;
                 end
                 
                 R.heatArray = [ R.heatArray ; Q ] ; 
